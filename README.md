@@ -1,7 +1,12 @@
 # 🤖 Discord Smart DM Auto-Responder
 
 <p align="center">
-  <b>Context-aware Discord DM Auto-Responder with Activity Detection, Anti-Spam Cooldown & 24/7 Cloud Support</b>
+  <b>Context-aware Discord DM Auto-Responder with Activity Detection, Anti-Spam Cooldown & 24/7 Cloud Support</b><br>
+  <i>Умный автоответчик для Discord в ЛС с определением игр/Spotify, защитой от спама и хостингом 24/7</i>
+</p>
+
+<p align="center">
+  <a href="#russian">🇷🇺 Читать на русском</a> • <a href="#english">🇬🇧 English Readme</a>
 </p>
 
 <p align="center">
@@ -14,93 +19,62 @@
 
 ---
 
-## ✨ Features
+<a name="russian"></a>
+## 🇷🇺 Документация на русском
 
-- **🧠 Activity-Aware Dynamic Replies**:
-  - Automatically checks what you are currently doing (Spotify playback, Google Antigravity, Counter-Strike 2, Dota 2, Roblox, streaming, or watching).
-  - Generates realistic, natural replies based on current context (e.g., *"Привет. Я сейчас в игре Counter-Strike 2. Как освобожусь, сразу отвечу."*).
-  - Clean text without emojis or AI-slop stickers.
+### ✨ Возможности
+- **🧠 Умные ответы под твою активность**:
+  - Автоматически проверяет, чем ты сейчас занят в Discord (играешь в CS2, Dota 2, Roblox, слушаешь Spotify или кодишь в Antigravity).
+  - Формирует реалистичный текстовый ответ без кринжовых эмодзи и бот-шаблонов.
+- **⏱️ Защита от спама (Smart Cooldown)**:
+  - Отвечает человеку только один раз за выбранный период (по умолчанию раз в 5 минут).
+  - Все последующие сообщения игнорируются до истечения таймера.
+- **🧪 Встроенный самотест (`!test`)**:
+  - Напиши `!test` в любой свой чат или ЛС — бот сразу же сформирует и отправит тестовый ответ, чтобы можно было проверить статус без друзей и твинков.
+- **☁️ Облачный деплой 24/7 (Render.com / Docker / VPS)**:
+  - Встроенный микро веб-сервер на `$PORT` для бесплатного тарифа Render.com.
+  - Работает даже при полностью выключенном компьютере.
 
-- **⏱️ Anti-Spam Smart Cooldown**:
-  - Remembers who was messaged and enforces a per-user cooldown (default: 5 minutes / 300s).
-  - Subsequent messages from the same user are ignored until the cooldown expires.
-
-- **🧪 Built-in Self-Testing (`!test`)**:
-  - Send `!test` to any chat or DM from your own account.
-  - The bot immediately generates and replies with your active status so you can verify it anytime without needing a second account or friend.
-
-- **☁️ 24/7 Cloud Ready (Render.com / Docker / VPS)**:
-  - Built-in lightweight HTTP health check server on `$PORT` to comply with Render.com Free Web Service requirements.
-  - Can run both locally in the background on Windows or 24/7 on cloud hosting.
-
----
-
-## 🛠️ Project Structure
-
-```
-discord-smart-autoresponder/
-├── autoresponder.py      # Main bot client & activity analyzer
-├── config.example.json   # Template configuration file
-├── requirements.txt      # Python dependencies
-├── Procfile              # Render / Heroku process declaration
-├── render.yaml           # One-click Render.com deployment blueprint
-├── run_silent.vbs        # Silent background launcher for Windows
-├── start.bat / stop.bat  # Windows control scripts
-└── .gitignore            # Keeps your tokens and secrets secure
-```
-
----
-
-## 🚀 Getting Started
-
-### 1. Requirements
-- Python 3.10+
-- A Discord User Token
-
-### 2. Installation
+### 🚀 Быстрый запуск локально
 ```bash
 git clone https://github.com/storm-dev-arch/discord-smart-autoresponder.git
 cd discord-smart-autoresponder
 pip install -r requirements.txt
+cp config.example.json config.json
+```
+Вставь токен в `config.json` и запусти:
+```bash
+python autoresponder.py
 ```
 
-### 3. Local Configuration
-1. Copy `config.example.json` to `config.json`:
-   ```bash
-   cp config.example.json config.json
-   ```
-2. Insert your Discord Token:
-   ```json
-   {
-       "token": "YOUR_DISCORD_TOKEN",
-       "cooldown_seconds": 300,
-       "only_dms": true,
-       "ignored_user_ids": []
-   }
-   ```
-3. Run:
-   ```bash
-   python autoresponder.py
-   ```
+### ☁️ Хостинг 24/7 на Render.com
+1. Сделай форк или подключи репозиторий в [dashboard.render.com](https://dashboard.render.com).
+2. Создай новый **Web Service** с бесплатным тарифом `Free`.
+3. В Environment Variables укажи:
+   - `DISCORD_TOKEN`: твой токен Discord
+   - `RENDER`: `true`
+4. Нажми Deploy — бот поднимется в облаке и будет работать круглосуточно.
 
 ---
 
-## ☁️ 24/7 Cloud Deployment (Render.com)
+<a name="english"></a>
+## 🇬🇧 English Documentation
 
-1. Fork or push this repository to your GitHub.
-2. In [Render Dashboard](https://dashboard.render.com), click **New +** -> **Web Service**.
-3. Select this repository.
-4. Set:
-   - **Environment**: `Python`
-   - **Build Command**: `pip install -r requirements.txt`
-   - **Start Command**: `python autoresponder.py`
-5. In **Environment Variables**, add:
-   - `DISCORD_TOKEN`: `your_discord_token`
-   - `RENDER`: `true`
-6. Deploy! The built-in HTTP server will automatically satisfy Render's health checks.
+### ✨ Features
+- **🧠 Activity-Aware Dynamic Replies**: Automatically detects games, Spotify, Antigravity, and active windows to form natural responses without emojis.
+- **⏱️ Anti-Spam Smart Cooldown**: Configurable per-user cooldown timer (default: 300s).
+- **🧪 Built-in Self-Testing (`!test`)**: Trigger an instant verification test by sending `!test`.
+- **☁️ 24/7 Cloud Ready (Render.com / Docker / VPS)**: Built-in HTTP health check server for free tier keep-alive.
+
+### 🚀 Quick Start
+```bash
+git clone https://github.com/storm-dev-arch/discord-smart-autoresponder.git
+cd discord-smart-autoresponder
+pip install -r requirements.txt
+python autoresponder.py
+```
 
 ---
 
 ## 📄 License
-
-Distributed under the MIT License. See `LICENSE` for more information.
+Distributed under the MIT License. See `LICENSE` for details.
