@@ -1,0 +1,6 @@
+{
+    "token": "YOUR_DISCORD_TOKEN_HERE",
+    "cooldown_seconds": 300,
+    "only_dms": true,
+    "ignored_user_ids": []
+}
