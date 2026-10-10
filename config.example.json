@@ -2,5 +2,12 @@
     "token": "YOUR_DISCORD_TOKEN_HERE",
     "cooldown_seconds": 300,
     "only_dms": true,
-    "ignored_user_ids": []
+    "ignored_user_ids": [],
+    "telegram": {
+        "enabled": true,
+        "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+        "chat_id": 123456789,
+        "forward_dms": true,
+        "auto_reply_enabled": true
+    }
 }

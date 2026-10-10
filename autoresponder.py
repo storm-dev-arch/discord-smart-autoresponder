@@ -6,6 +6,7 @@ import io
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import asyncio
+import aiohttp
 import psutil
 import discord
 
@@ -21,7 +22,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write(b"Antigravity Discord Auto-Responder is Alive!")
+        self.wfile.write(b"Antigravity Discord & Telegram Bridge is Alive!")
 
     def log_message(self, format, *args):
         pass
@@ -50,25 +51,51 @@ if not os.environ.get("RENDER"):
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
 def load_config():
-    if not os.path.exists(CONFIG_PATH):
-        default_config = {
-            "token": "PASTE_YOUR_DISCORD_TOKEN_HERE",
-            "cooldown_seconds": 300,
-            "only_dms": True,
-            "ignored_user_ids": []
+    default_config = {
+        "token": "PASTE_YOUR_DISCORD_TOKEN_HERE",
+        "cooldown_seconds": 300,
+        "only_dms": True,
+        "ignored_user_ids": [],
+        "telegram": {
+            "enabled": False,
+            "bot_token": "",
+            "chat_id": 0,
+            "forward_dms": True,
+            "auto_reply_enabled": True
         }
+    }
+    if not os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(default_config, f, indent=4, ensure_ascii=False)
         return default_config
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+            if "telegram" not in cfg:
+                cfg["telegram"] = default_config["telegram"]
+            return cfg
+    except Exception:
+        return default_config
 
 config = load_config()
+
+# Загрузка токенов из переменных окружения или конфига
 TOKEN = os.environ.get("DISCORD_TOKEN") or config.get("token", "").strip()
+
+TG_ENABLED = os.environ.get("TELEGRAM_ENABLED", "").lower() in ["1", "true"] or config.get("telegram", {}).get("enabled", False)
+TG_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or config.get("telegram", {}).get("bot_token", "").strip()
+raw_chat_id = os.environ.get("TELEGRAM_CHAT_ID") or config.get("telegram", {}).get("chat_id", 0)
+try:
+    TG_CHAT_ID = int(raw_chat_id)
+except (ValueError, TypeError):
+    TG_CHAT_ID = 0
+
+if TG_BOT_TOKEN and TG_CHAT_ID != 0:
+    TG_ENABLED = True
 
 if not TOKEN or TOKEN == "PASTE_YOUR_DISCORD_TOKEN_HERE":
     print("=" * 60)
-    print("[!] ОШИБКА: Токен не указан! Укажи в config.json или переменной DISCORD_TOKEN.")
+    print("[!] ОШИБКА: Токен Discord не указан!")
     print("=" * 60)
     if not os.environ.get("RENDER"):
         input("\nНажми Enter для выхода...")
@@ -76,6 +103,10 @@ if not TOKEN or TOKEN == "PASTE_YOUR_DISCORD_TOKEN_HERE":
 
 client = discord.Client()
 last_replied = {}
+# Маппинг для связи сообщений: telegram_message_id -> {discord_channel_id, author_name}
+tg_to_discord_map = {}
+# Флаг включения автоответчика (можно переключать через Telegram командой /toggle)
+auto_reply_active = config.get("telegram", {}).get("auto_reply_enabled", True)
 
 def get_active_process_hint():
     """Проверка фоновых процессов, если активность Дискорда еще не обновилась."""
@@ -103,7 +134,6 @@ def get_active_process_hint():
 
 def generate_smart_reply():
     """Формирует контекстный умный ответ на основе текущей активности Discord (без эмодзи)."""
-    # 1. Поиск активности через гильдии (сервера)
     activities = []
     for guild in client.guilds:
         if guild.me and guild.me.activities:
@@ -111,11 +141,9 @@ def generate_smart_reply():
             break
 
     for act in activities:
-        # Spotify
         if isinstance(act, discord.Spotify):
             return f"Привет. Я сейчас слушаю трек {act.title} ({act.artist}) и занят делами. Отвечу позже."
 
-        # Пропускаем чистый пользовательский статус, если это не игра
         if act.type == discord.ActivityType.custom:
             continue
 
@@ -144,27 +172,169 @@ def generate_smart_reply():
 
             return f"Привет. Я сейчас занят в {act_name}. Отвечу позже."
 
-    # 2. Если в дискорде активность пустая, проверяем процессы Windows
     hint = get_active_process_hint()
     if hint:
         if "Antigravity" in hint:
             return "Привет. Я сейчас занят, работаю в Google Antigravity. Отвечу позже."
         return f"Привет. Я сейчас занят в {hint}. Освобожусь и напишу."
 
-    # 3. Дефолтный ответ при отсутствии активности
     return "Привет. Меня сейчас нет на месте или я отошел. Отвечу чуть позже."
+
+# ----------------- TELEGRAM BRIDGE API -----------------
+
+async def tg_send_message(text, parse_mode="HTML", reply_to_message_id=None):
+    """Отправка сообщения в Telegram владельцу."""
+    if not TG_ENABLED or not TG_BOT_TOKEN or not TG_CHAT_ID:
+        return None
+    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TG_CHAT_ID,
+        "text": text,
+        "parse_mode": parse_mode
+    }
+    if reply_to_message_id:
+        payload["reply_to_message_id"] = reply_to_message_id
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("result", {}).get("message_id")
+                else:
+                    err = await resp.text()
+                    print(f"[x] Ошибка отправки в Telegram: {resp.status} - {err}")
+    except Exception as e:
+        print(f"[x] Исключение при отправке в Telegram: {e}")
+    return None
+
+async def telegram_worker():
+    """Фоновый поллер входящих сообщений и команд из Telegram."""
+    if not TG_ENABLED or not TG_BOT_TOKEN or not TG_CHAT_ID:
+        return
+
+    offset = 0
+    print("[+] Telegram Bridge запущен и слушает входящие команды/ответы...")
+    global auto_reply_active
+
+    await tg_send_message(
+        f"🤖 <b>Discord Bridge подключен!</b>\n"
+        f"👤 Аккаунт: <code>{client.user}</code>\n"
+        f"⚡ Автоответчик: {'ВКЛ' if auto_reply_active else 'ВЫКЛ'}\n\n"
+        f"<i>Теперь все входящие ЛС будут прилетать сюда. Просто отвечай свайпом на сообщение, чтобы написать человеку в Discord!</i>"
+    )
+
+    while not client.is_closed():
+        try:
+            url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/getUpdates"
+            params = {"offset": offset, "timeout": 25}
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=30) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        for update in data.get("result", []):
+                            offset = update["update_id"] + 1
+                            msg = update.get("message")
+                            if not msg:
+                                continue
+
+                            sender_id = msg.get("from", {}).get("id")
+                            if sender_id != TG_CHAT_ID:
+                                continue  # Игнорировать посторонних
+
+                            text = msg.get("text", "").strip()
+                            reply_to = msg.get("reply_to_message")
+                            msg_id = msg.get("message_id")
+
+                            # 1. Ответ свайпом на пересланное сообщение из Discord
+                            if reply_to and reply_to.get("message_id") in tg_to_discord_map:
+                                mapping = tg_to_discord_map[reply_to["message_id"]]
+                                ch_id = mapping["channel_id"]
+                                author_name = mapping.get("author", "пользователю")
+
+                                try:
+                                    ch = client.get_channel(ch_id) or await client.fetch_channel(ch_id)
+                                    async with ch.typing():
+                                        await asyncio.sleep(0.8)
+                                    await ch.send(text)
+                                    await tg_send_message(
+                                        f"✅ Отправлено в Discord для <b>{author_name}</b>",
+                                        reply_to_message_id=msg_id
+                                    )
+                                    print(f"[✓] Ответ из TG отправлен в Discord ({author_name}): {text[:30]}")
+                                except Exception as send_err:
+                                    await tg_send_message(
+                                        f"❌ Ошибка отправки в Discord: <code>{send_err}</code>",
+                                        reply_to_message_id=msg_id
+                                    )
+                                continue
+
+                            # 2. Обработка команд
+                            if text.startswith("/"):
+                                cmd_parts = text.split(maxsplit=1)
+                                cmd = cmd_parts[0].lower()
+                                args = cmd_parts[1] if len(cmd_parts) > 1 else ""
+
+                                if cmd == "/status":
+                                    cur_act = generate_smart_reply()
+                                    status_msg = (
+                                        f"📊 <b>Статус моста:</b>\n"
+                                        f"• Discord: <code>{client.user}</code> (ID: <code>{client.user.id}</code>)\n"
+                                        f"• Автоответчик: {'🟢 ВКЛ' if auto_reply_active else '🔴 ВЫКЛ'}\n"
+                                        f"• Текущая активность: <i>{cur_act}</i>\n"
+                                        f"• Пинг Discord: <code>{round(client.latency * 1000)}ms</code>"
+                                    )
+                                    await tg_send_message(status_msg, reply_to_message_id=msg_id)
+
+                                elif cmd == "/toggle":
+                                    auto_reply_active = not auto_reply_active
+                                    state_str = "ВКЛЮЧЕН 🟢" if auto_reply_active else "ВЫКЛЮЧЕН (режим ручного общения) 🔴"
+                                    await tg_send_message(
+                                        f"⚡ Автоответчик теперь <b>{state_str}</b>",
+                                        reply_to_message_id=msg_id
+                                    )
+
+                                elif cmd == "/send":
+                                    # /send <user_id> <сообщение>
+                                    sub_parts = args.split(maxsplit=1)
+                                    if len(sub_parts) < 2:
+                                        await tg_send_message("ℹ️ Использование: <code>/send &lt;ID_пользователя&gt; &lt;текст&gt;</code>", reply_to_message_id=msg_id)
+                                    else:
+                                        target_uid, out_text = sub_parts[0], sub_parts[1]
+                                        try:
+                                            target_user = await client.fetch_user(int(target_uid))
+                                            dm_channel = await target_user.create_dm()
+                                            await dm_channel.send(out_text)
+                                            await tg_send_message(f"✅ Отправлено в ЛС для <b>{target_user}</b>", reply_to_message_id=msg_id)
+                                        except Exception as e:
+                                            await tg_send_message(f"❌ Ошибка отправки: <code>{e}</code>", reply_to_message_id=msg_id)
+
+                                elif cmd == "/help":
+                                    help_text = (
+                                        "📖 <b>Команды Telegram Bridge:</b>\n\n"
+                                        "• <b>Ответ свайпом</b> — просто свайпни любое сообщение от бота и напиши ответ. Он сразу улетит человеку в Discord.\n"
+                                        "• <code>/status</code> — статус подключения и активности Discord.\n"
+                                        "• <code>/toggle</code> — включить/выключить автоответчик.\n"
+                                        "• <code>/send &lt;user_id&gt; &lt;текст&gt;</code> — отправить ЛС по ID.\n"
+                                        "• <code>/help</code> — это меню."
+                                    )
+                                    await tg_send_message(help_text, reply_to_message_id=msg_id)
+        except Exception as poll_err:
+            await asyncio.sleep(4)
+        await asyncio.sleep(0.5)
+
+# ----------------- DISCORD EVENTS -----------------
 
 @client.event
 async def on_ready():
     print("=" * 60)
-    print(f"[+] Умный автоответчик в сети!")
+    print(f"[+] Discord клиент подключен!")
     print(f"[+] Аккаунт: {client.user} (ID: {client.user.id})")
-    print(f"[+] Режим: {'Только ЛС (DMs)' if config.get('only_dms', True) else 'Все чаты'}")
-    print(f"[+] Без эмодзи: Да (чистый текст)")
-    print(f"[+] Умный статус активности: Включен")
+    print(f"[+] Telegram Bridge: {'ВКЛЮЧЕН' if TG_ENABLED else 'ВЫКЛЮЧЕН'}")
+    print(f"[+] Автоответчик: {'ВКЛЮЧЕН' if auto_reply_active else 'ВЫКЛЮЧЕН'}")
     print("=" * 60)
-    print("[i] Для проверки напиши !test в любой чат.")
-    print("=" * 60)
+    if TG_ENABLED:
+        asyncio.create_task(telegram_worker())
 
 @client.event
 async def on_message(message):
@@ -185,7 +355,7 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    # Только ЛС
+    # Проверка режима Только ЛС
     if config.get("only_dms", True) and not isinstance(message.channel, discord.DMChannel):
         return
 
@@ -197,31 +367,56 @@ async def on_message(message):
     now = time.time()
     cooldown = config.get("cooldown_seconds", 300)
 
-    # Проверка кулдауна
-    if user_id in last_replied:
-        elapsed = now - last_replied[user_id]
-        if elapsed < cooldown:
-            remaining = int(cooldown - elapsed)
-            print(f"[-] Пропуск {message.author}: кулдаун еще {remaining} сек.")
-            return
+    # 1. ПЕРЕСЫЛКА В ТЕЛЕГРАМ
+    if TG_ENABLED:
+        sender_tag = f"{message.author.name}#{message.author.discriminator}" if message.author.discriminator != "0" else message.author.name
+        attachments_text = ""
+        if message.attachments:
+            att_urls = "\n".join([f"📎 <a href='{att.url}'>Вложение</a>" for att in message.attachments])
+            attachments_text = f"\n{att_urls}"
 
-    smart_reply = generate_smart_reply()
+        clean_content = message.clean_content.replace("<", "&lt;").replace(">", "&gt;") if message.clean_content else "<i>[Вложение / Пустое]</i>"
 
-    try:
-        async with message.channel.typing():
-            await asyncio.sleep(1.5)
-        
-        await message.channel.send(smart_reply)
-        last_replied[user_id] = now
-        print(f"[✓] [{time.strftime('%H:%M:%S')}] Автоответ для {message.author}: \"{smart_reply}\"")
-    except Exception as e:
-        print(f"[x] Ошибка отправки: {e}")
+        tg_text = (
+            f"📨 <b>Новое сообщение в Discord!</b>\n"
+            f"👤 <b>От:</b> {sender_tag} (<code>{message.author.id}</code>)\n\n"
+            f"💬 {clean_content}"
+            f"{attachments_text}\n\n"
+            f"<i>💡 Ответь свайпом на это сообщение, чтобы отправить ответ в Discord.</i>"
+        )
+        tg_msg_id = await tg_send_message(tg_text)
+        if tg_msg_id:
+            tg_to_discord_map[tg_msg_id] = {
+                "channel_id": message.channel.id,
+                "author": sender_tag
+            }
+
+    # 2. АВТООТВЕТЧИК (если включен)
+    if auto_reply_active:
+        if user_id in last_replied:
+            elapsed = now - last_replied[user_id]
+            if elapsed < cooldown:
+                remaining = int(cooldown - elapsed)
+                print(f"[-] Пропуск автоответа для {message.author}: кулдаун еще {remaining} сек.")
+                return
+
+        smart_reply = generate_smart_reply()
+        try:
+            async with message.channel.typing():
+                await asyncio.sleep(1.5)
+            await message.channel.send(smart_reply)
+            last_replied[user_id] = now
+            print(f"[✓] [{time.strftime('%H:%M:%S')}] Автоответ для {message.author}: \"{smart_reply}\"")
+        except Exception as e:
+            print(f"[x] Ошибка отправки автоответа: {e}")
 
 try:
     client.run(TOKEN, reconnect=True)
 except discord.LoginFailure:
-    print("\n[!] ОШИБКА: Неверный токен Discord! Проверь config.json.")
-    input("\nНажми Enter для выхода...")
+    print("\n[!] ОШИБКА: Неверный токен Discord! Проверь config.json или DISCORD_TOKEN.")
+    if not os.environ.get("RENDER"):
+        input("\nНажми Enter для выхода...")
 except Exception as e:
     print(f"\n[!] Ошибка сессии: {e}")
-    input("\nНажми Enter для выхода...")
+    if not os.environ.get("RENDER"):
+        input("\nНажми Enter для выхода...")
