@@ -272,10 +272,21 @@ async def telegram_worker():
                             # 2. Обработка команд
                             if text.startswith("/"):
                                 cmd_parts = text.split(maxsplit=1)
-                                cmd = cmd_parts[0].lower()
+                                cmd = cmd_parts[0].lower().split("@")[0]
                                 args = cmd_parts[1] if len(cmd_parts) > 1 else ""
 
-                                if cmd == "/status":
+                                if cmd in ["/start", "/help"]:
+                                    help_text = (
+                                        "📖 <b>Команды Telegram Bridge:</b>\n\n"
+                                        "• <b>Ответ свайпом</b> — просто свайпни любое сообщение от бота и напиши ответ. Он сразу улетит человеку в Discord.\n"
+                                        "• <code>/status</code> — статус подключения и активности Discord.\n"
+                                        "• <code>/toggle</code> — включить/выключить автоответчик.\n"
+                                        "• <code>/send &lt;user_id&gt; &lt;текст&gt;</code> — отправить ЛС по ID.\n"
+                                        "• <code>/help</code> — это меню."
+                                    )
+                                    await tg_send_message(help_text, reply_to_message_id=msg_id)
+
+                                elif cmd == "/status":
                                     cur_act = generate_smart_reply()
                                     status_msg = (
                                         f"📊 <b>Статус моста:</b>\n"
