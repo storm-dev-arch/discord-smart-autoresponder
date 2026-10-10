@@ -103,7 +103,8 @@ if not TOKEN or TOKEN == "PASTE_YOUR_DISCORD_TOKEN_HERE":
 
 client = discord.Client()
 last_replied = {}
-# Маппинг для связи сообщений: telegram_message_id -> {discord_channel_id, author_name}
+active_replying_users = set()
+# Маппинг для связи сообщений: telegram_message_id -> {channel_id, discord_msg_id, author, user_id}
 tg_to_discord_map = {}
 # Флаг включения автоответчика (можно переключать через Telegram командой /toggle)
 auto_reply_active = config.get("telegram", {}).get("auto_reply_enabled", True)
@@ -250,15 +251,32 @@ async def telegram_worker():
                             if reply_to and reply_to.get("message_id") in tg_to_discord_map:
                                 mapping = tg_to_discord_map[reply_to["message_id"]]
                                 ch_id = mapping["channel_id"]
+                                discord_msg_id = mapping.get("discord_msg_id")
                                 author_name = mapping.get("author", "пользователю")
+                                target_uid = mapping.get("user_id")
 
                                 try:
                                     ch = client.get_channel(ch_id) or await client.fetch_channel(ch_id)
                                     async with ch.typing():
                                         await asyncio.sleep(0.8)
-                                    await ch.send(text)
+
+                                    # Отвечаем именно как Reply на исходное сообщение в Discord
+                                    sent_msg = None
+                                    if discord_msg_id:
+                                        try:
+                                            ref_msg = await ch.fetch_message(discord_msg_id)
+                                            sent_msg = await ref_msg.reply(text, mention_author=True)
+                                        except Exception:
+                                            pass
+                                    if not sent_msg:
+                                        sent_msg = await ch.send(text)
+
+                                    # Продлеваем таймаут автоответчика на 10 минут, раз мы сами ответили человеку
+                                    if target_uid:
+                                        last_replied[target_uid] = time.time() + 600
+
                                     await tg_send_message(
-                                        f"✅ Отправлено в Discord для <b>{author_name}</b>",
+                                        f"✅ Отправлено ответом в Discord для <b>{author_name}</b>",
                                         reply_to_message_id=msg_id
                                     )
                                     print(f"[✓] Ответ из TG отправлен в Discord ({author_name}): {text[:30]}")
@@ -366,8 +384,12 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    # Проверка режима Только ЛС
-    if config.get("only_dms", True) and not isinstance(message.channel, discord.DMChannel):
+    # Строгая проверка: ТОЛЬКО личные сообщения 1 на 1 (игнорировать сервера и групповые чаты)
+    if message.guild is not None:
+        return
+    if not isinstance(message.channel, discord.DMChannel):
+        return
+    if isinstance(message.channel, discord.GroupChannel):
         return
 
     # Черный список
@@ -389,21 +411,28 @@ async def on_message(message):
         clean_content = message.clean_content.replace("<", "&lt;").replace(">", "&gt;") if message.clean_content else "<i>[Вложение / Пустое]</i>"
 
         tg_text = (
-            f"📨 <b>Новое сообщение в Discord!</b>\n"
+            f"📨 <b>Новое сообщение в Discord (ЛС)!</b>\n"
             f"👤 <b>От:</b> {sender_tag} (<code>{message.author.id}</code>)\n\n"
             f"💬 {clean_content}"
             f"{attachments_text}\n\n"
-            f"<i>💡 Ответь свайпом на это сообщение, чтобы отправить ответ в Discord.</i>"
+            f"<i>💡 Ответь свайпом на это сообщение, чтобы ответить в Discord.</i>"
         )
         tg_msg_id = await tg_send_message(tg_text)
         if tg_msg_id:
             tg_to_discord_map[tg_msg_id] = {
                 "channel_id": message.channel.id,
-                "author": sender_tag
+                "discord_msg_id": message.id,
+                "author": sender_tag,
+                "user_id": user_id
             }
 
-    # 2. АВТООТВЕТЧИК (если включен)
+    # 2. АВТООТВЕТЧИК (с жесткой защитой от спама и гонок сообщений)
     if auto_reply_active:
+        # Если бот уже прямо сейчас печатает ответ этому пользователю — отбой
+        if user_id in active_replying_users:
+            return
+
+        # Проверка кулдауна
         if user_id in last_replied:
             elapsed = now - last_replied[user_id]
             if elapsed < cooldown:
@@ -411,15 +440,20 @@ async def on_message(message):
                 print(f"[-] Пропуск автоответа для {message.author}: кулдаун еще {remaining} сек.")
                 return
 
+        # Взводим блокировку и таймер СРАЗУ, до задержки печати!
+        active_replying_users.add(user_id)
+        last_replied[user_id] = now
+
         smart_reply = generate_smart_reply()
         try:
             async with message.channel.typing():
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(2.0)
             await message.channel.send(smart_reply)
-            last_replied[user_id] = now
             print(f"[✓] [{time.strftime('%H:%M:%S')}] Автоответ для {message.author}: \"{smart_reply}\"")
         except Exception as e:
             print(f"[x] Ошибка отправки автоответа: {e}")
+        finally:
+            active_replying_users.discard(user_id)
 
 try:
     client.run(TOKEN, reconnect=True)
