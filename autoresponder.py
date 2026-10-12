@@ -101,13 +101,43 @@ if not TOKEN or TOKEN == "PASTE_YOUR_DISCORD_TOKEN_HERE":
         input("\nНажми Enter для выхода...")
     sys.exit(1)
 
+import random
+
 client = discord.Client()
-last_replied = {}
+# Состояние диалогов с юзерами: user_id -> {"count": int, "last_replied_time": float}
+user_conv_state = {}
+MAX_AUTOREPLIES_PER_USER = 2  # Максимум 2 автоответа за сессию (чтобы не спамить)
+AUTOREPLY_SESSION_RESET_SECS = 7200  # Сброс сессии через 2 часа молчания
+
 active_replying_users = set()
 # Маппинг для связи сообщений: telegram_message_id -> {channel_id, discord_msg_id, author, user_id}
 tg_to_discord_map = {}
 # Флаг включения автоответчика (можно переключать через Telegram командой /toggle)
 auto_reply_active = config.get("telegram", {}).get("auto_reply_enabled", True)
+
+GAME_COLLOQUIAL_NAMES = {
+    "counter-strike 2": "в кс",
+    "cs2": "в кс",
+    "cs:go": "в кс",
+    "counter-strike": "в кс",
+    "dota 2": "в доте",
+    "dota": "в доте",
+    "roblox": "в роблоксе",
+    "robloxplayerbeta": "в роблоксе",
+    "minecraft": "в майнкрафте",
+    "gta v": "в гта",
+    "grand theft auto v": "в гта",
+    "valorant": "в валоранте",
+    "rust": "в расте",
+    "apex legends": "в апексе",
+}
+
+def clean_game_name(raw_name: str) -> str:
+    low = (raw_name or "").lower().strip()
+    for k, v in GAME_COLLOQUIAL_NAMES.items():
+        if k in low:
+            return v
+    return f"в {raw_name.strip()}"
 
 def get_active_process_hint():
     """Проверка фоновых процессов, если активность Дискорда еще не обновилась."""
@@ -133,53 +163,138 @@ def get_active_process_hint():
             pass
     return None
 
-def generate_smart_reply():
-    """Формирует контекстный умный ответ на основе текущей активности Discord (без эмодзи)."""
+def generate_smart_reply(incoming_text: str = "", is_followup: bool = False) -> str:
+    """
+    Генерирует умный, естественный и продуманный ответ без шаблонного кринжа и слопа.
+    Учитывает статус активности и то, первое ли это сообщение или повторное.
+    """
+    clean_in = (incoming_text or "").lower().strip()
+
+    # 1. Если это повторное сообщение от собеседника — не долбим одно и то же!
+    if is_followup:
+        followup_variants = [
+            "видел сообщения, пока всё ещё занят, освобожусь — отпишу",
+            "вижу, чуть позже чекну и отвечу",
+            "пока не могу ответить, позже напишу",
+            "всё вижу, как освобожусь сразу гляну"
+        ]
+        return random.choice(followup_variants)
+
+    # 2. Определение текущей активности в Discord
     activities = []
     for guild in client.guilds:
         if guild.me and guild.me.activities:
             activities = guild.me.activities
             break
 
-    for act in activities:
-        if isinstance(act, discord.Spotify):
-            return f"Привет. Я сейчас слушаю трек {act.title} ({act.artist}) и занят делами. Отвечу позже."
+    current_game = None
+    is_antigravity = False
+    is_coding = False
+    is_streaming = False
 
+    for act in activities:
         if act.type == discord.ActivityType.custom:
             continue
 
         act_name = getattr(act, "name", "")
-        details = getattr(act, "details", None)
-        state = getattr(act, "state", None)
+        if "antigravity" in act_name.lower():
+            is_antigravity = True
+            break
+        elif "visual studio" in act_name.lower() or "code" in act_name.lower():
+            is_coding = True
+            break
+        elif act.type == discord.ActivityType.playing:
+            current_game = clean_game_name(act_name)
+            break
+        elif act.type == discord.ActivityType.streaming:
+            is_streaming = True
+            break
 
-        if act_name:
-            if "antigravity" in act_name.lower():
-                if details:
-                    return f"Привет. Я сейчас занят, работаю в Google Antigravity ({details}). Напишу позже."
-                return "Привет. Я сейчас занят, работаю в Google Antigravity. Напишу позже."
-            
-            if act.type == discord.ActivityType.playing:
-                extra = f" ({state})" if state else ""
-                return f"Привет. Я сейчас в игре {act_name}{extra}. Как освобожусь, сразу отвечу."
-            
-            if act.type == discord.ActivityType.streaming:
-                return f"Привет. Я сейчас стримлю {act_name}. Отвечу после завершения стрима."
-            
-            if act.type == discord.ActivityType.watching:
-                return f"Привет. Я сейчас смотрю {act_name}. Отвечу позже."
-            
-            if act.type == discord.ActivityType.listening:
-                return f"Привет. Я сейчас слушаю {act_name}. Отвечу чуть позже."
+    # Если Discord статус еще не подтянулся — чекаем локальные процессы
+    if not current_game and not is_antigravity and not is_coding:
+        hint = get_active_process_hint()
+        if hint:
+            if "Antigravity" in hint:
+                is_antigravity = True
+            elif "VS Code" in hint:
+                is_coding = True
+            else:
+                current_game = clean_game_name(hint)
 
-            return f"Привет. Я сейчас занят в {act_name}. Отвечу позже."
+    # 3. Контекстный анализ входящей фразы
+    is_invite = any(w in clean_in for w in [
+        "го кс", "го в ", "пойдешь", "погнали", "будешь играть", "го катать", "в пати", "го дуо", "го дб", "го дс"
+    ])
+    is_where = any(w in clean_in for w in [
+        "ты тут", "ты где", "на месте", "тут?", "здесь?", "ау", "живой", "ку ты где"
+    ])
+    is_urgent = any(w in clean_in for w in [
+        "срочно", "важно", "быстрее", "чекни", "глянь", "посмотри", "скинь"
+    ])
 
-    hint = get_active_process_hint()
-    if hint:
-        if "Antigravity" in hint:
-            return "Привет. Я сейчас занят, работаю в Google Antigravity. Отвечу позже."
-        return f"Привет. Я сейчас занят в {hint}. Освобожусь и напишу."
+    # 4. Формирование живых человеческих ответов
+    if is_invite:
+        if current_game:
+            return random.choice([
+                f"ща уже {current_game}, позже если что отпишу",
+                f"пока не могу, {current_game} ща, как закончу напишу"
+            ])
+        if is_antigravity or is_coding:
+            return random.choice([
+                "ща занят проектом / кодом, пока не пойду, позже отпишу",
+                "не могу ща, в работе, как освобожусь напишу"
+            ])
+        return random.choice([
+            "пока не могу, занят немного. позже если что напишу",
+            "ща не за компом / занят, позже отпишу"
+        ])
 
-    return "Привет. Меня сейчас нет на месте или я отошел. Отвечу чуть позже."
+    if is_urgent:
+        return random.choice([
+            "увидел, ща не у компа / занят, как смогу сразу гляну",
+            "вижу сообщение, но ща не могу глянуть нормально, скоро отвечу"
+        ])
+
+    if current_game:
+        return random.choice([
+            f"ща {current_game}, как доиграю отпишу",
+            f"катаю ща {current_game}, освобожусь напишу",
+            f"ща {current_game}, чуть позже гляну"
+        ])
+
+    if is_antigravity:
+        return random.choice([
+            "ща работаю в Antigravity, как освобожусь отпишу",
+            "занят в Antigravity ща, чуть позже чекну",
+            "ща в работе, освобожусь — напишу"
+        ])
+
+    if is_coding:
+        return random.choice([
+            "ща за кодом, как освобожусь отвечу",
+            "занят кодингом ща, чуть позже отпишу"
+        ])
+
+    if is_streaming:
+        return random.choice([
+            "ща на стриме, как закончу отпишу",
+            "стримлю ща, позже гляну"
+        ])
+
+    if is_where:
+        return random.choice([
+            "не, отошел / занят пока, освобожусь напишу",
+            "ща занят немного, как буду на месте отпишу"
+        ])
+
+    # Стандартные естественные варианты (если играет фоновая музыка или просто занят/отошел)
+    default_variants = [
+        "ща занят немного, позже отвечу",
+        "отошел, как буду на месте отпишу",
+        "чуть позже чекну, ща занят",
+        "не у компа ща, освобожусь — отпишу"
+    ]
+    return random.choice(default_variants)
 
 # ----------------- TELEGRAM BRIDGE API -----------------
 
@@ -271,9 +386,9 @@ async def telegram_worker():
                                     if not sent_msg:
                                         sent_msg = await ch.send(text)
 
-                                    # Продлеваем таймаут автоответчика на 10 минут, раз мы сами ответили человеку
+                                    # Сбрасываем счетчик и продлеваем таймаут автоответчика на 10 минут, раз мы сами ответили человеку
                                     if target_uid:
-                                        last_replied[target_uid] = time.time() + 600
+                                        user_conv_state[target_uid] = {"count": 0, "last_replied_time": time.time() + 600}
 
                                     await tg_send_message(
                                         f"✅ Отправлено ответом в Discord для <b>{author_name}</b>",
@@ -305,12 +420,13 @@ async def telegram_worker():
                                     await tg_send_message(help_text, reply_to_message_id=msg_id)
 
                                 elif cmd == "/status":
-                                    cur_act = generate_smart_reply()
+                                    cur_act = generate_smart_reply("ты тут", is_followup=False)
                                     status_msg = (
                                         f"📊 <b>Статус моста:</b>\n"
                                         f"• Discord: <code>{client.user}</code> (ID: <code>{client.user.id}</code>)\n"
                                         f"• Автоответчик: {'🟢 ВКЛ' if auto_reply_active else '🔴 ВЫКЛ'}\n"
-                                        f"• Текущая активность: <i>{cur_act}</i>\n"
+                                        f"• Пример автоответа: <i>{cur_act}</i>\n"
+                                        f"• Активных диалогов: <code>{len(user_conv_state)}</code>\n"
                                         f"• Пинг Discord: <code>{round(client.latency * 1000)}ms</code>"
                                     )
                                     await tg_send_message(status_msg, reply_to_message_id=msg_id)
@@ -331,9 +447,11 @@ async def telegram_worker():
                                     else:
                                         target_uid, out_text = sub_parts[0], sub_parts[1]
                                         try:
-                                            target_user = await client.fetch_user(int(target_uid))
+                                            uid_int = int(target_uid)
+                                            target_user = await client.fetch_user(uid_int)
                                             dm_channel = await target_user.create_dm()
                                             await dm_channel.send(out_text)
+                                            user_conv_state[uid_int] = {"count": 0, "last_replied_time": time.time() + 600}
                                             await tg_send_message(f"✅ Отправлено в ЛС для <b>{target_user}</b>", reply_to_message_id=msg_id)
                                         except Exception as e:
                                             await tg_send_message(f"❌ Ошибка отправки: <code>{e}</code>", reply_to_message_id=msg_id)
@@ -370,7 +488,7 @@ async def on_message(message):
     # Тест от самого себя через !test
     if message.author.id == client.user.id:
         if message.content.strip().lower() == "!test":
-            reply_text = generate_smart_reply()
+            reply_text = generate_smart_reply("ты тут", is_followup=False)
             try:
                 async with message.channel.typing():
                     await asyncio.sleep(1.0)
@@ -426,30 +544,42 @@ async def on_message(message):
                 "user_id": user_id
             }
 
-    # 2. АВТООТВЕТЧИК (с жесткой защитой от спама и гонок сообщений)
+    # 2. АВТООТВЕТЧИК (с контекстной логикой, защитой от повторов и спама)
     if auto_reply_active:
         # Если бот уже прямо сейчас печатает ответ этому пользователю — отбой
         if user_id in active_replying_users:
             return
 
-        # Проверка кулдауна
-        if user_id in last_replied:
-            elapsed = now - last_replied[user_id]
-            if elapsed < cooldown:
-                remaining = int(cooldown - elapsed)
-                print(f"[-] Пропуск автоответа для {message.author}: кулдаун еще {remaining} сек.")
-                return
+        state = user_conv_state.setdefault(user_id, {"count": 0, "last_replied_time": 0.0})
+        elapsed = now - state["last_replied_time"]
+
+        # Если прошло больше 2 часов с последнего автоответа — считаем это новой сессией
+        if elapsed > AUTOREPLY_SESSION_RESET_SECS:
+            state["count"] = 0
+
+        # Если мы уже 2 раза ответили этому пользователю за сессию — больше не спамим!
+        if state["count"] >= MAX_AUTOREPLIES_PER_USER:
+            print(f"[-] Лимит автоответов исчерпан для {message.author} ({state['count']}/{MAX_AUTOREPLIES_PER_USER}). Ждем ответа владельца.")
+            return
+
+        # Проверка стандартного кулдауна
+        if elapsed < cooldown:
+            remaining = int(cooldown - elapsed)
+            print(f"[-] Пропуск автоответа для {message.author}: кулдаун еще {remaining} сек.")
+            return
 
         # Взводим блокировку и таймер СРАЗУ, до задержки печати!
         active_replying_users.add(user_id)
-        last_replied[user_id] = now
+        state["last_replied_time"] = now
+        is_followup = (state["count"] > 0)
+        state["count"] += 1
 
-        smart_reply = generate_smart_reply()
+        smart_reply = generate_smart_reply(incoming_text=message.content, is_followup=is_followup)
         try:
             async with message.channel.typing():
                 await asyncio.sleep(2.0)
             await message.channel.send(smart_reply)
-            print(f"[✓] [{time.strftime('%H:%M:%S')}] Автоответ для {message.author}: \"{smart_reply}\"")
+            print(f"[✓] [{time.strftime('%H:%M:%S')}] Автоответ #{state['count']} для {message.author}: \"{smart_reply}\"")
         except Exception as e:
             print(f"[x] Ошибка отправки автоответа: {e}")
         finally:
