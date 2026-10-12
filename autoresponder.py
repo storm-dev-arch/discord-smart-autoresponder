@@ -191,6 +191,7 @@ def generate_smart_reply(incoming_text: str = "", is_followup: bool = False) -> 
 
     current_game = None
     is_antigravity = False
+    antigravity_details = None
     is_coding = False
     is_streaming = False
 
@@ -199,8 +200,10 @@ def generate_smart_reply(incoming_text: str = "", is_followup: bool = False) -> 
             continue
 
         act_name = getattr(act, "name", "")
+        details = getattr(act, "details", None)
         if "antigravity" in act_name.lower():
             is_antigravity = True
+            antigravity_details = details
             break
         elif "visual studio" in act_name.lower() or "code" in act_name.lower():
             is_coding = True
@@ -265,6 +268,11 @@ def generate_smart_reply(incoming_text: str = "", is_followup: bool = False) -> 
         ])
 
     if is_antigravity:
+        if antigravity_details:
+            return random.choice([
+                f"ща в Antigravity ({antigravity_details}), как освобожусь отпишу",
+                f"занят в Antigravity ({antigravity_details}), чуть позже чекну"
+            ])
         return random.choice([
             "ща работаю в Antigravity, как освобожусь отпишу",
             "занят в Antigravity ща, чуть позже чекну",
